@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+  <defs>
+    <linearGradient id="signal" x1="900" y1="0" x2="1500" y2="850" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8854d8"/>
+      <stop offset="1" stop-color="#4879dc"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop stop-color="#ae86ed" stop-opacity=".23"/>
+      <stop offset="1" stop-color="#ae86ed" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="1320" cy="270" r="410" fill="url(#glow)"/>
+  <g stroke="url(#signal)" stroke-width="1.6" opacity=".38">
+    <circle cx="1320" cy="270" r="240"/>
+    <circle cx="1320" cy="270" r="190" stroke-dasharray="3 12"/>
+    <circle cx="1320" cy="270" r="130"/>
+    <circle cx="1320" cy="270" r="42"/>
+    <path d="M1035 270h570M1320 0v555" stroke-dasharray="5 9"/>
+    <path d="M1320 270l170-170M1320 270h240"/>
+    <path d="M1120 135v-45h45m310 0h45v45m0 270v45h-45m-310 0h-45v-45" stroke-width="3"/>
+    <rect x="65" y="710" width="250" height="190" rx="12" stroke-dasharray="4 10"/>
+    <path d="M65 750v-40h40m170 0h40v40m0 110v40h-40m-170 0H65v-40" stroke-width="3"/>
+    <circle cx="190" cy="805" r="38"/>
+    <path d="M135 805h110m-55-55v110M315 805h140l50-50h180"/>
+    <circle cx="685" cy="755" r="4" fill="#8854d8"/>
+    <path d="M1470 655h-110l-55 55h-185m350-35h-100l-55 55h-75"/>
+    <circle cx="1120" cy="710" r="4" fill="#8854d8"/>
+  </g>
+</svg>
