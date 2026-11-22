@@ -5,6 +5,48 @@ let credential = null, state = null, connected = false, streamAbort = null, cloc
 let feedURL = null, lastFrame = -1, captureStream = null, source = 'off', sourceGeneration = 0;
 let people = 2, lastSimulation = 0, toastTimer = null, health = {vision:false};
 let roundSignature = '', scenarioSignature = '', historySignature = '', logSignature = '', settingsSignature = '';
+let alarmContext = null, alarmGain = null, alarmBuffer = null, alarmLoad = null, alarmSource = null, alarmMuted = false;
+function silenceAlarm(){
+  if(alarmSource){alarmSource.stop();alarmSource.disconnect();alarmSource=null;}
+}
+async function enableAlarm(){
+  const Audio = window.AudioContext || window.webkitAudioContext;
+  if(!Audio)return;
+  try{
+    if(!alarmContext){alarmContext=new Audio();alarmGain=alarmContext.createGain();alarmGain.gain.value=1;alarmGain.connect(alarmContext.destination);}
+    await alarmContext.resume();
+    if(!alarmLoad){
+      alarmLoad=(async()=>{
+        const response=await fetch('/assets/mixkit-classic-alarm-995.wav');
+        if(!response.ok)throw new Error('Alarm recording could not be loaded.');
+        alarmBuffer=await alarmContext.decodeAudioData(await response.arrayBuffer());
+      })().catch(error=>{alarmLoad=null;throw error;});
+    }
+    await alarmLoad;
+    renderPanic();
+  }catch(error){toast(error.message || 'Enable audio in your browser, then try again.',true);}
+}
+function renderPanic(){
+  const active=!!(state?.panic&&!state.ended),manager=state?.role==='manager';
+  const entering=active&&!document.body.classList.contains('panic-active');
+  document.body.classList.toggle('panic-active',active);
+  document.title=active?'URGENT SYSTEM ALERT | Surveillance Lab':'Surveillance Lab';
+  $('panicAlert').hidden=!active;
+  if(entering){$('panicAlert').tabIndex=-1;$('panicAlert').focus({preventScroll:true});$('panicAlert').scrollIntoView({block:'start'});}
+  $('panicControls').hidden=!manager||!!state?.ended;
+  $('panicStart').disabled=active||!connected;
+  $('panicStop').hidden=!manager;
+  $('panicStop').disabled=!connected;
+  const canPlay=alarmContext?.state==='running'&&!!alarmBuffer;
+  $('panicSound').textContent=canPlay&&!alarmMuted?'Mute alarm on this device':'Enable alarm sound';
+  if(!active||alarmMuted||!canPlay||document.hidden){silenceAlarm();return;}
+  if(alarmSource)return;
+  alarmSource=alarmContext.createBufferSource();
+  alarmSource.buffer=alarmBuffer;
+  alarmSource.loop=true;
+  alarmSource.connect(alarmGain);
+  alarmSource.start();
+}
 const base = () => `/api/rooms/${credential.code}`;
 const auth = () => ({Authorization:`Bearer ${credential.token}`});
 const serverNow = () => Date.now()/1000 + clockOffset;
@@ -17,7 +59,7 @@ async function api(path, data, method){
 }
 async function control(action, data={}){return api(base()+'/control',{action,...data});}
 function guard(fn){return async event=>{try{await fn(event);}catch(error){toast(error.message,true);}};}
-function setConnection(ok){connected=ok; $('connection').textContent=ok?'CONNECTED':'RECONNECTING'; $('connection').className='badge '+(ok?'on':'warn'); roundSignature=''; if(state)renderRound();}
+function setConnection(ok){connected=ok; $('connection').textContent=ok?'CONNECTED':'RECONNECTING'; $('connection').className='badge '+(ok?'on':'warn'); roundSignature=''; if(state){renderRound();renderPanic();}}
 async function enter(data){
   credential=data; sessionStorage.setItem('surveillance-session',JSON.stringify(data));
   $('landing').hidden=true; $('workspace').hidden=false;
@@ -69,13 +111,15 @@ function render(next){
   if(state.ended)stopCapture();
   const obs=state.observation;
   if(obs){
-    $('observationTitle').textContent=`${obs.people} ${obs.people===1?'person':'people'} ${obs.simulated?'simulated':'detected'}${obs.zone?' · central zone occupied':''}`;
-    $('observationDetail').textContent=`${obs.model} · frame #${obs.frameSeq} · ${new Date(obs.at*1000).toLocaleTimeString()}${obs.simulated?' · not model output':' · HOG scores are margins, not probabilities'}`;
+    const count=obs.count??obs.people,entity=obs.entity||'person';
+    const noun=entity==='face'?(count===1?'face':'faces'):(count===1?'person':'people');
+    $('observationTitle').textContent=`${count} ${noun} ${obs.simulated?'simulated':'detected'}${obs.zone?' · central zone occupied':''}`;
+    $('observationDetail').textContent=`${obs.model} · frame #${obs.frameSeq} · ${new Date(obs.at*1000).toLocaleTimeString()}${obs.simulated?' · not model output':' · face detection score, not identity confidence'}`;
   }else{
     $('observationTitle').textContent=state.live&&state.source==='camera'&&!health.vision?'Camera live · vision disabled':'No current observation';
     $('observationDetail').textContent='A model label is an observation, not a conclusion.';
   }
-  renderRound(); renderHistory();
+  renderRound(); renderHistory(); renderPanic();
   if(state.role==='manager'){
     renderScenarios();renderLog();
     const sig=JSON.stringify(state.settings);
@@ -108,7 +152,7 @@ function renderRound(){
   let html=`<span class="category">${escapeHTML(round.category)} · ${escapeHTML(round.origin)}</span><h2 class="waiting-title">${escapeHTML(round.title)}</h2><div class="round-observation">${escapeHTML(round.observation)}${round.evidence?`<br><small>Trigger context: ${escapeHTML(round.evidence.model)}, frame #${round.evidence.frameSeq}. This is not a frozen image.</small>`:''}</div><h3 class="round-question">${escapeHTML(round.question)}</h3>`;
   if(round.status==='revealed'){
     html+=resultsHTML(round.options,round.counts,round.responses);
-    html+=`<div class="discussion"><span class="eyebrow">OPEN THE DISCUSSION</span><p>${escapeHTML(round.reveal)}</p></div>`;
+    if(round.reveal)html+=`<div class="discussion"><span class="eyebrow">OPEN THE DISCUSSION</span><p>${escapeHTML(round.reveal)}</p></div>`;
   }else if(manager){
     html+=resultsHTML(round.options,round.counts,round.responses);
     html+='<p class="hint">Live counts are visible only to the manager until revealed.</p>';
@@ -135,7 +179,7 @@ function updateTimer(){
   }
 }
 function renderScenarios(){
-  const blocked=state.ended||!!(state.round&&state.round.status!=='revealed');
+  const blocked=state.ended||state.panic||!!(state.round&&state.round.status!=='revealed');
   const signature=JSON.stringify([state.scenarios,blocked]);if(signature===scenarioSignature)return;scenarioSignature=signature;
   $('scenarioList').innerHTML=state.scenarios.map((s,i)=>`<div class="scenario-row"><span class="scenario-number">${String(i+1).padStart(2,'0')}</span><div class="scenario-info"><h3>${escapeHTML(s.title)}</h3><p>${escapeHTML(s.category)} · ${s.trigger==='manual'?'manual':s.trigger==='timer'?'timer or manual':`${escapeHTML(s.trigger)} detection or manual`}</p></div><button class="quiet small" data-scenario="${escapeHTML(s.id)}" ${blocked?'disabled':''}>Launch ↗</button></div>`).join('');
   document.querySelectorAll('[data-scenario]').forEach(button=>button.onclick=guard(()=>control('start',{scenarioId:button.dataset.scenario})));
@@ -156,7 +200,7 @@ function drawOverlay(){
   for(const box of obs.boxes){
     const [x,y,w,h]=box.box.map((n,i)=>n*(i%2===0?960:540));
     ctx.strokeStyle=obs.simulated?'#e8b46d':'#c4adff';ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);
-    const label=obs.simulated?'SIMULATED PERSON':`PERSON · ${box.score.toFixed(2)}`;
+    const label=obs.simulated?'SIMULATED PERSON':`${box.label.toUpperCase()} · ${box.score.toFixed(2)}`;
     ctx.fillStyle='#101020e8';ctx.fillRect(x,y-21,ctx.measureText(label).width+14,21);ctx.fillStyle=ctx.strokeStyle;ctx.fillText(label,x+6,y-6);
   }
 }
@@ -252,13 +296,18 @@ async function captureLoop(generation){
   setTimeout(()=>captureLoop(generation),240);
 }
 function reset(){
+  silenceAlarm();document.body.classList.remove('panic-active');document.title='Surveillance Lab';$('panicAlert').hidden=true;$('panicControls').hidden=true;
   stopCapture();if(streamAbort)streamAbort.abort();credential=null;state=null;sessionStorage.removeItem('surveillance-session');
   roundSignature=scenarioSignature=historySignature=logSignature=settingsSignature='';lastFrame=-1;
   if(feedURL)URL.revokeObjectURL(feedURL);feedURL=null;$('feed').removeAttribute('src');$('feed').hidden=true;
   $('workspace').hidden=true;$('landing').hidden=false;$('connection').textContent='LOCAL EXPERIENCE';$('connection').className='badge';
 }
-$('createForm').onsubmit=guard(async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{const data=Object.fromEntries(new FormData(event.target));await enter(await api('/api/rooms',data));await startSource('camera');}finally{button.disabled=false;}});
-$('joinForm').onsubmit=guard(async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{const data=Object.fromEntries(new FormData(event.target));await enter(await api(`/api/rooms/${data.code.trim().toUpperCase()}/join`,{name:data.name}));}finally{button.disabled=false;}});
+$('createForm').onsubmit=guard(async event=>{event.preventDefault();void enableAlarm();const button=event.submitter;button.disabled=true;try{const data=Object.fromEntries(new FormData(event.target));await enter(await api('/api/rooms',data));await startSource('camera');}finally{button.disabled=false;}});
+$('joinForm').onsubmit=guard(async event=>{event.preventDefault();void enableAlarm();const button=event.submitter;button.disabled=true;try{const data=Object.fromEntries(new FormData(event.target));await enter(await api(`/api/rooms/${data.code.trim().toUpperCase()}/join`,{name:data.name}));}finally{button.disabled=false;}});
+$('panicStart').onclick=guard(async()=>{alarmMuted=false;void enableAlarm();await control('panic',{active:true});});
+$('panicStop').onclick=guard(()=>control('panic',{active:false}));
+$('panicSound').onclick=()=>{if(alarmContext?.state==='running'&&alarmBuffer&&!alarmMuted){alarmMuted=true;renderPanic();}else{alarmMuted=false;void enableAlarm();}};
+document.addEventListener('visibilitychange',()=>{if(document.hidden)silenceAlarm();else renderPanic();});
 $('copyLink').onclick=guard(async()=>{
   const url=new URL(location.origin);url.searchParams.set('room',state.code);
   if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(url.href);toast('Join link copied. On other devices, use your server’s network address.');}
@@ -274,11 +323,11 @@ $('toggleCustom').onclick=()=>{$('customForm').hidden=!$('customForm').hidden;};
 $('customForm').onsubmit=guard(async event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.target));data.options=data.options.split('\n').map(x=>x.trim()).filter(Boolean);await control('custom',data);event.target.reset();event.target.hidden=true;toast('Scenario added to this room.');});
 $('endSession').onclick=guard(async()=>{if(!confirm('End this session for everyone? Active voting will be revealed and broadcasting will stop.'))return;await control('end');stopCapture();});
 $('export').onclick=guard(async()=>{const response=await fetch(base()+'/export',{headers:auth()});if(!response.ok)throw new Error('Export failed.');const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`surveillance-${state.code}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-window.addEventListener('pagehide',()=>{if(captureStream)captureStream.getTracks().forEach(t=>t.stop());});
+window.addEventListener('pagehide',()=>{silenceAlarm();if(captureStream)captureStream.getTracks().forEach(t=>t.stop());});
 setInterval(updateTimer,200);
 (async()=>{
   try{health=await api('/api/health');}catch{toast('Cannot reach the server. Check that it is running.',true);}
-  $('visionHint').textContent=health.vision?'Vision enabled: offline OpenCV HOG person detection. Best with well-lit, upright, full-body people. Scores are not probabilities.':'Vision disabled. Demo detections are simulated. Restart with --vision to enable the real offline person detector.';
+  $('visionHint').textContent=health.vision?'Vision enabled: offline YuNet face detection. Face boxes and counts work with close-up camera views. No identity recognition.':'Vision disabled. Demo detections are simulated. Restart with --vision to enable the offline face detector.';
   const room=new URLSearchParams(location.search).get('room');if(room)$('code').value=room.toUpperCase().slice(0,6);
   try{const saved=JSON.parse(sessionStorage.getItem('surveillance-session'));if(saved?.token)await enter(saved);}catch{reset();toast('The saved room is unavailable. Join or create a session.',true);}
   pollFrame();

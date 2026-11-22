@@ -8,7 +8,7 @@ A complete, locally runnable multiplayer web application for a facilitated mass-
 - Room creation, six-character join codes, nickname entry, per-tab credential recovery, and connection recovery.
 - Browser camera capture and a shared JPEG frame feed (approximately 3–4 frames/second, no audio).
 - An animated demo scene with explicitly labeled synthetic people and synthetic detections.
-- Optional real, offline **OpenCV HOG + SVM person detection**, with bounding boxes and raw decision scores.
+- Optional real, offline **OpenCV YuNet face detection**, with face bounding boxes, counts, and detection scores.
 - Manual scenarios, periodic prompts, detection-triggered prompts, custom scenarios, timed voting, manager-only live counts, public reveals, and results history.
 - JSON exports containing aggregate results, scenario definitions, and the activity log. Credentials and image frames are excluded.
 - Server-authoritative voting deadlines and permissions; participants cannot control the camera, trigger rounds, or read unrevealed results through the API.
@@ -46,6 +46,9 @@ py -m venv .venv
 .\.venv\Scripts\python.exe server.py
 ```
 
+Presentation run:
+  Use 0.0.0.0 IP address on host computer to bypass ssl certificate requirement for the approaching computers
+
 Open **http://localhost:8000**. These commands do not require changing PowerShell’s script execution policy.
 
 ## Try the whole experience in five minutes
@@ -73,26 +76,28 @@ python server.py --vision
 
 On Windows, substitute `.\.venv\Scripts\python.exe` for `python` if you have not activated the environment.
 
+With the project environment installed, Windows users can also run `powershell -ExecutionPolicy Bypass -File .\start-vision.ps1`. This starts both the HTTP setup page and HTTPS camera app with the face detector enabled. Stop an existing server on ports 8000/8443 first, or choose separate ports with `-Port 8444 -SetupPort 8001`. The launcher uses the project environment so it loads the installed vision packages.
+
 1. Open the manager at `http://localhost:8000` and create a session.
 2. Click **Share camera** and allow camera access.
-3. The detector analyzes a frame about every 1.5 seconds, subject to processing time. Everyone receives the same model observations and broadcast frames.
+3. The detector analyzes a frame about every 0.5 seconds, subject to processing time. Everyone receives the same model observations and broadcast frames.
 4. Enable **Detection prompts** and apply settings if you want detections to start scenarios.
 
 ### What this model can and cannot do
 
-HOG uses a pretrained SVM for upright, full-body person detection. Its weights are included with OpenCV; there are no model downloads or API keys. It can miss seated people, close-up faces, partial bodies, poor lighting, and unusual angles. False positives are possible. A well-lit full-body scene gives it the best chance of working.
+YuNet is a pretrained face detector run locally through OpenCV. Its ONNX weights and MIT license are bundled in `models/`; no API key, cloud upload, or runtime model download is needed. It is intended for close-up camera views, including seated participants. Poor lighting, profiles, occlusion, and very small faces can still cause misses or false detections.
 
-Boxes are labeled with **raw HOG decision margins**, not probability or confidence percentages. The app detects people, counts detections, and checks whether a box center falls within the middle 30% of the image. It does not identify people, infer emotion or intent, recognize suspicious behavior, or detect dwell time.
+The live feed displays **FACE** boxes with model detection scores and a face count. These scores are not identity confidence. The app does not recognize identities, infer emotion or intent, or determine whether anyone is suspicious. The scripted panic accusations remain a manually triggered demonstration.
 
-The animated demo does not run through HOG. Its observations are synthetic and labeled accordingly. Turning on `--vision` does not change that distinction.
+The animated demo still uses synthetic people and is labeled accordingly. It does not run through YuNet.
 
 ### Detection trigger rules
 
-- Two successive observations containing at least one person are required.
+- Two successive observations containing at least one face (or simulated person in demo mode) are required.
 - A live feed is required. Stale frames cannot start a round.
-- Three or more detected people select the crowd scenario.
-- Otherwise a box centered in the observation zone selects the zone scenario.
-- Otherwise the presence scenario is selected.
+- Three or more detections select a matching crowd scenario, if one exists.
+- Otherwise a box centered in the observation zone selects a matching zone scenario, if one exists.
+- Otherwise a matching face scenario (person scenario in demo mode) is selected, if one exists. The two investment scenarios remain timer/manual scenarios and are not triggered by faces.
 - The configured interval is also the minimum cooldown between detection-triggered rounds.
 - An open or closed-but-unrevealed round blocks all new rounds.
 - Without periodic mode, the manager must reveal each round to allow the next detection-triggered round.
@@ -199,7 +204,7 @@ Edit `scenarios.json` before starting the server to change the built-in wording.
 
 - `public/style.css`: colors, spacing, and responsive layout.
 - `public/app.js`: browser rendering, camera capture, frame reception, and controls.
-- `vision.py`: replaceable detector, returning normalized person boxes and raw scores.
+- `vision.py`: replaceable detector, returning normalized face boxes and detection scores.
 - `server.py`: permissions, session state, prompts, streaming, voting, and exports.
 
 ## Tests
@@ -235,9 +240,19 @@ flowchart TD
   M[Manager browser] -->|JPEG frames and controls| S[Python application server]
   S -->|Frames and session events| P[Participant browsers]
   P -->|Vote submissions| S
-  S -->|Sampled frames| V[Optional HOG person detector]
+  S -->|Sampled frames| V[Optional YuNet face detector]
   V -->|Observations| E[Scenario engine]
   E -->|Timed or detection prompts| S
 ```
 
 The browser UI uses ordinary HTML, CSS, and JavaScript. The server uses aiohttp for HTTP and authenticated Server-Sent Events; video frames travel separately. The server owns voting deadlines and role authorization. No database or frontend build tooling is required.
+
+## Panic simulation
+
+Use **Start panic simulation** in the manager workspace to send a scripted AI failure alert to every connected screen. The emergency banner includes the supplied accusations, explicitly marked as false claims for the demonstration. The page, camera frame, and metrics switch to an emergency red theme without flashing.
+
+The supplied `mixkit-classic-alarm-995.wav` recording loops at its original volume on devices where browser audio has been enabled by an interaction. If a browser blocks playback (including after restoring a session), click **Enable alarm sound** on that device. **Mute alarm on this device** affects only that browser. **Stop simulation for everyone** clears the shared alert and stops the sound; ending the session also clears it. Hidden tabs silence their audio until shown again.
+
+Panic mode can interrupt an existing round. Its voting deadline continues, while new manual, periodic, and detection-triggered rounds are blocked until the manager stops the simulation.
+
+Run the camera and alarm lifecycle checks with `node --test tests/camera.test.cjs tests/panic.test.cjs`.

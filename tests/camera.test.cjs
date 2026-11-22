@@ -94,7 +94,7 @@ test('leaving while permission is pending releases a late stream', async () => {
 test('creating a room enters the manager session before starting its camera', async () => {
   const calls = [], form = {}, button = {disabled:false};
   const context = vm.createContext({
-    $: () => form, guard: fn => fn, FormData: class { *[Symbol.iterator]() {yield ['title', 'Room'];} },
+    $: () => form, guard: fn => fn, enableAlarm: async () => {}, FormData: class { *[Symbol.iterator]() {yield ['title', 'Room'];} },
     api: async path => {calls.push(path); return {role:'manager'};},
     enter: async data => calls.push(data.role), startSource: async source => calls.push(source)
   });

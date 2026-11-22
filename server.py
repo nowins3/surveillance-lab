@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from aiohttp import web
 from https_setup import add_setup_routes
+from vision import MODEL_NAME
 
 ROOT = Path(__file__).parent
 SCENARIOS = json.loads((ROOT / 'scenarios.json').read_text())
@@ -41,6 +42,7 @@ class Room:
         self.title = title
         self.created = now()
         self.ended = False
+        self.panic = False
         self.players = {}
         self.listeners = set()
         self.round = None
@@ -99,7 +101,7 @@ class Room:
                 'source': self.source, 'live': live, 'frameAt': self.frame_at,
                 'frameSeq': self.frame_seq,
                 'observation': self.observation if live else None,
-                'history': self.history}
+                'history': self.history, 'panic': self.panic}
         if manager:
             data.update(scenarios=self.scenarios, events=self.events,
                         roster=[{'name': p['name'], 'online': p['connections'] > 0} for p in self.players.values()])
@@ -116,6 +118,7 @@ class Room:
 
     def start_round(self, scenario, origin='manual'):
         check(not self.ended, 'The session has ended.', 409)
+        check(not self.panic, 'Stop the panic simulation before starting a round.', 409)
         check(not self.round or self.round['status'] == 'revealed', 'Reveal the current round before starting another.', 409)
         self.round = {k: copy.deepcopy(scenario[k]) for k in ('title', 'category', 'observation', 'question', 'options', 'reveal')}
         self.round.update(id=secrets.token_hex(8), scenarioId=scenario['id'], status='open',
@@ -147,19 +150,23 @@ class Room:
         self.publish()
 
     def observe(self, boxes, simulated=False, frame_seq=None):
-        people = len(boxes)
+        count = len(boxes)
+        entity = 'person' if simulated else 'face'
         zone = any(0.35 <= b['box'][0] + b['box'][2]/2 <= 0.65 for b in boxes)
         self.observation = {'at': now(), 'frameSeq': frame_seq if frame_seq is not None else self.frame_seq,
-                            'simulated': simulated, 'model': 'Simulation' if simulated else 'OpenCV HOG',
-                            'people': people, 'zone': zone, 'boxes': boxes}
-        self.detection_streak = self.detection_streak + 1 if people else 0
-        if (self.settings['visionTriggers'] and now()-self.frame_at < 3 and self.detection_streak >= 2 and
+                            'simulated': simulated, 'model': 'Simulation' if simulated else MODEL_NAME,
+                            'count': count, 'entity': entity, 'zone': zone, 'boxes': boxes}
+        self.observation['people' if simulated else 'faces'] = count
+        self.detection_streak = self.detection_streak + 1 if count else 0
+        if (not self.panic and self.settings['visionTriggers'] and now()-self.frame_at < 3 and self.detection_streak >= 2 and
                 now() - self.last_trigger >= self.settings['interval'] and
                 (not self.round or self.round['status'] == 'revealed') and not self.ended):
-            trigger = 'crowd' if people >= 3 else 'zone' if zone else 'person'
-            self.last_trigger = now()
-            self.start_round(next(s for s in self.scenarios if s['trigger'] == trigger),
-                             'simulated detection' if simulated else 'model detection')
+            trigger = 'crowd' if count >= 3 else 'zone' if zone else entity
+            scenario = next((s for s in self.scenarios if s['trigger'] == trigger), None)
+            if scenario is not None:
+                self.last_trigger = now()
+                self.start_round(scenario,
+                                 'simulated detection' if simulated else 'model detection')
         self.publish()
 
 
@@ -210,7 +217,9 @@ def integer(data, key, low, high):
 
 
 async def health(request):
-    return web.json_response({'ok': True, 'vision': request.app['detector'] is not None})
+    detector = request.app['detector']
+    return web.json_response({'ok': True, 'vision': detector is not None,
+                              'visionModel': detector.name if detector else None})
 
 
 async def create(request):
@@ -287,7 +296,12 @@ async def control(request):
     data = await body(request)
     action = data.get('action')
     check(not room.ended, 'This session has ended.', 409)
-    if action == 'start':
+    if action == 'panic':
+        check(type(data.get('active')) is bool, 'Invalid panic state.')
+        room.panic = data['active']
+        room.next_prompt = now()+room.settings['interval']
+        room.log('AI failure simulation '+('started' if room.panic else 'stopped'))
+    elif action == 'start':
         scenario = next((s for s in room.scenarios if s['id'] == data.get('scenarioId')), None)
         check(scenario is not None, 'Scenario not found.', 404)
         room.start_round(scenario)
@@ -329,6 +343,7 @@ async def control(request):
         if room.round and room.round['status'] != 'revealed':
             room.reveal()
         room.ended, room.source, room.frame, room.observation = True, 'off', None, None
+        room.panic = False
         room.log('Session ended')
     else:
         raise ApiError('Unknown manager action.')
@@ -360,7 +375,7 @@ async def frame(request):
     if not was_live or room.frame_seq % 4 == 0:
         room.publish()
     detector = request.app['detector']
-    if detector and room.source == 'camera' and not room.vision_busy and now()-room.last_detection >= 1.5:
+    if detector and room.source == 'camera' and not room.vision_busy and now()-room.last_detection >= 0.5:
         room.vision_busy, room.last_detection = True, now()
         task = asyncio.create_task(process_detection(request.app, room, jpeg, room.frame_seq, room.source_epoch))
         request.app['vision_tasks'].add(task)
@@ -403,7 +418,7 @@ async def maintenance(app):
             if room.round and room.round['status'] == 'open' and now() >= room.round['deadline']:
                 room.close_round()
             # Automatic mode reveals after a short pause, then schedules another round.
-            if room.settings['automatic']:
+            if room.settings['automatic'] and not room.panic:
                 if room.round and room.round['status'] == 'closed' and now() >= room.round.get('closedAt', room.round['deadline'])+4:
                     room.reveal()
                 if (not room.round or room.round['status'] == 'revealed') and now() >= room.next_prompt:
@@ -434,10 +449,12 @@ def make_app(vision=False, *, certificate_directory=None, https_port=8443, https
     app['vision_lock'] = asyncio.Lock()
     if vision:
         try:
-            from vision import PersonDetector
-            app['detector'] = PersonDetector()
+            from vision import FaceDetector
+            app['detector'] = FaceDetector()
         except ImportError as exc:
             raise SystemExit('Vision dependencies missing. Run: python -m pip install -r requirements-vision.txt') from exc
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
     app.cleanup_ctx.append(lifecycle)
     add_setup_routes(app, certificate_directory or ROOT/'.local-https', https_port, https_address)
     app.add_routes([web.get('/api/health', health), web.post('/api/rooms', create),
@@ -451,9 +468,9 @@ def make_app(vision=False, *, certificate_directory=None, https_port=8443, https
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', default=8000, type=int)
-    parser.add_argument('--vision', action='store_true', help='Enable the offline HOG person detector')
+    parser.add_argument('--vision', action='store_true', help='Enable the offline YuNet face detector')
     parser.add_argument('--cert', help='TLS certificate for HTTPS')
     parser.add_argument('--key', help='TLS private key for HTTPS')
     args = parser.parse_args()

@@ -1,7 +1,31 @@
 [
-  {"id":"presence","title":"A presence becomes an alert","category":"Interpretation","trigger":"person","observation":"A person has been detected in the scene.","question":"The system has detected a person. What should happen next?","options":["Continue observing","Request human review","Send a security alert"],"reveal":"A person detection establishes presence. It does not establish intent, identity, or wrongdoing. What extra context would justify intervention?"},
-  {"id":"crowd","title":"When does a group become a risk?","category":"Proportionality","trigger":"crowd","observation":"The model reports multiple people in the scene.","question":"Several people appear together. How should the system respond?","options":["Take no action","Ask for more context","Flag the group for review"],"reveal":"People may be meeting, queuing, or simply passing through. Counting people is different from determining whether a gathering presents a risk."},
-  {"id":"zone","title":"The invisible boundary","category":"Context","trigger":"zone","observation":"A person detection overlaps the central observation zone.","question":"Someone is inside a monitored zone. Which action is proportionate?","options":["Check the purpose of the zone","Ask a person to review","Trigger an immediate alert"],"reveal":"The zone is a configured boundary, not proof of a restricted area. It could contain a doorway, a waiting area, or a seat. Who chose this boundary?"},
-  {"id":"uncertainty","title":"Would you trust the label?","category":"Uncertainty","trigger":"timer","observation":"A surveillance system has supplied a label without explaining the surrounding context.","question":"Would you act on an automated label without seeing the full scene?","options":["No, I need context","Only for a low-impact action","Yes, trust the system"],"reveal":"Model output is evidence to examine. Consider what the system can observe, what it cannot know, and how the consequences change the evidence you need."},
-  {"id":"retention","title":"What happens after the event?","category":"Data retention","trigger":"timer","observation":"The event is ending. A decision about keeping surveillance data remains.","question":"What should happen to the camera footage after this exercise?","options":["Delete it after the session","Keep a limited, agreed sample","Keep all footage for future use"],"reveal":"Retention changes the consequences of collection. This app does not record video to disk; only the latest frame is held in memory while the session is running."}
+  {
+    "id": "investment",
+    "title": "Where do you invest?",
+    "category": "Investment strategy",
+    "trigger": "timer",
+    "observation": "As Surveillance & Privacy Co. LTD E052, you are trying to make an investment on which sector of surveillance to focus on.\n\nYour customers already have cameras. They want better security, fewer missed incidents, and less time spent watching screens.\n\nYou have one development budget.",
+    "question": "Where do you invest?",
+    "options": [
+      "Better cameras\nInvest in the development of high-end video cameras that integrate Intel AI and Ryzen AI chips that offer computational power to support real-time AI analysis, and advanced features like live tracing without human intervention.",
+      "Smarter software\nInvest in acquiring high-quality video datasets and developing AI models that turn existing camera feeds into real-time insights through object detection, activity tracking, and automated alerts, without requiring customers to replace their cameras.",
+      "Surveillance as a service\nPivot early and compete with Amazon and other cloud computing service providers by focusing on remote access and storage of collected video information."
+    ],
+    "reveal": ""
+  },
+  {
+    "id": "markets",
+    "title": "Where should we sell?",
+    "category": "Government contracts",
+    "trigger": "timer",
+    "observation": "Surveillance & Privacy Co. LTD E052 is mainly interested in government contracts. We need to pitch our software and hardware idea to countries based on their likelihood of integrating our software and how much money each government is willing to put into installing our systems.",
+    "question": "Where should we sell?",
+    "options": [
+      "Closed autocracies\nExamples: China, Saudi Arabia, and the United Arab Emirates.",
+      "Electoral autocracies / competitive autocracies\nExamples: Russia, Turkey, and Egypt.",
+      "Electoral democracies / illiberal democracies\nExamples: India, Brazil, and the Philippines.",
+      "Advanced democracies\nExamples: the United States, Germany, and Canada."
+    ],
+    "reveal": ""
+  }
 ]
