@@ -5,6 +5,7 @@ let credential = null, state = null, connected = false, streamAbort = null, cloc
 let feedURL = null, lastFrame = -1, captureStream = null, source = 'off', sourceGeneration = 0;
 let people = 2, lastSimulation = 0, toastTimer = null, health = {vision:false};
 let roundSignature = '', scenarioSignature = '', historySignature = '', logSignature = '', settingsSignature = '';
+let captchaDraft = {id:null, tiles:[]};
 let alarmContext = null, alarmGain = null, alarmBuffer = null, alarmLoad = null, alarmSource = null, alarmMuted = false;
 function silenceAlarm(){
   if(alarmSource){alarmSource.stop();alarmSource.disconnect();alarmSource=null;}
@@ -48,6 +49,53 @@ function renderPanic(){
   alarmSource.start();
 }
 const base = () => `/api/rooms/${credential.code}`;
+let offerPlayed = null, offerSource = null;
+function silenceOffer(){
+  if(offerSource){offerSource.stop();offerSource.disconnect();offerSource=null;}
+}
+function playOfferChime(){
+  if(alarmContext?.state!=='running'||document.hidden)return false;
+  silenceOffer();
+  const rate=alarmContext.sampleRate, buffer=alarmContext.createBuffer(1,Math.ceil(rate*1.5),rate);
+  const samples=buffer.getChannelData(0);
+  // A quiet, three-note major chord notification, played once instead of looping.
+  [523.25,659.25,783.99].forEach((frequency,n)=>{
+    const offset=n*.18;
+    for(let i=Math.floor(offset*rate);i<samples.length;i++){
+      const t=i/rate-offset;
+      samples[i]+=.09*Math.min(1,t/.015)*Math.exp(-5*t)*Math.sin(2*Math.PI*frequency*t);
+    }
+  });
+  offerSource=alarmContext.createBufferSource();offerSource.buffer=buffer;
+  offerSource.connect(alarmContext.destination);offerSource.start();return true;
+}
+async function enableOfferSound(){
+  const Audio=window.AudioContext||window.webkitAudioContext;if(!Audio)return;
+  if(!alarmContext){alarmContext=new Audio();alarmGain=alarmContext.createGain();alarmGain.connect(alarmContext.destination);}
+  await alarmContext.resume();
+  if(state?.offer?.active&&!state.panic&&!state.ended&&playOfferChime())offerPlayed=state.offer.id;
+}
+function renderOffer(){
+  const offer=state?.offer,manager=state?.role==='manager';
+  const active=!!(offer?.active&&!state.ended&&!state.panic);
+  const entering=active&&$('offerAlert').hidden;
+  document.body.classList.toggle('offer-active',active);
+  $('offerAlert').hidden=!active;
+  $('offerControls').hidden=!manager||!!state?.ended;
+  $('offerStart').disabled=!connected||!!state?.panic||!!offer?.active;
+  $('offerStop').hidden=!manager;$('offerStop').disabled=!connected;
+  if(!active){silenceOffer();return;}
+  document.title='Exclusive investor offer | Surveillance Lab';
+  if(entering){$('offerAlert').tabIndex=-1;$('offerAlert').focus({preventScroll:true});$('offerAlert').scrollIntoView({block:'start'});}
+  $('offerChoices').hidden=manager;
+  $('offerYes').disabled=$('offerNo').disabled=!connected;
+  $('offerYes').setAttribute('aria-pressed',String(offer.myVote===0));
+  $('offerNo').setAttribute('aria-pressed',String(offer.myVote===1));
+  $('offerResult').hidden=!offer.myResult;$('offerResult').textContent=offer.myResult||'';
+  $('offerTally').hidden=!manager;
+  if(manager)$('offerTally').textContent=`${offer.responses} responses · Yes: ${offer.counts[0]} · No: ${offer.counts[1]}`;
+  if(offerPlayed!==offer.id&&playOfferChime())offerPlayed=offer.id;
+}
 const auth = () => ({Authorization:`Bearer ${credential.token}`});
 const serverNow = () => Date.now()/1000 + clockOffset;
 function toast(message, error=false){ $('toast').textContent = message; $('toast').className=error?'error':''; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,5000); }
@@ -59,7 +107,7 @@ async function api(path, data, method){
 }
 async function control(action, data={}){return api(base()+'/control',{action,...data});}
 function guard(fn){return async event=>{try{await fn(event);}catch(error){toast(error.message,true);}};}
-function setConnection(ok){connected=ok; $('connection').textContent=ok?'CONNECTED':'RECONNECTING'; $('connection').className='badge '+(ok?'on':'warn'); roundSignature=''; if(state){renderRound();renderPanic();}}
+function setConnection(ok){connected=ok; $('connection').textContent=ok?'CONNECTED':'RECONNECTING'; $('connection').className='badge '+(ok?'on':'warn'); roundSignature=''; if(state){renderRound();renderPanic();renderOffer();}}
 async function enter(data){
   credential=data; sessionStorage.setItem('surveillance-session',JSON.stringify(data));
   $('landing').hidden=true; $('workspace').hidden=false;
@@ -119,7 +167,7 @@ function render(next){
     $('observationTitle').textContent=state.live&&state.source==='camera'&&!health.vision?'Camera live · vision disabled':'No current observation';
     $('observationDetail').textContent='A model label is an observation, not a conclusion.';
   }
-  renderRound(); renderHistory(); renderPanic();
+  renderRound(); renderHistory(); renderPanic(); renderOffer();
   if(state.role==='manager'){
     renderScenarios();renderLog();
     const sig=JSON.stringify(state.settings);
@@ -135,6 +183,49 @@ function render(next){
   }
 }
 function resultsHTML(options,counts,total){return options.map((option,i)=>`<div class="result-row"><div class="result-label"><span>${escapeHTML(option)}</span><span>${counts[i]} · ${total?Math.round(counts[i]/total*100):0}%</span></div><progress class="result-track" value="${counts[i]}" max="${Math.max(total,1)}" aria-label="${escapeHTML(option)}: ${counts[i]} of ${total}"></progress></div>`).join('');}
+function renderCaptcha(round, manager, isOpen){
+  const fresh=captchaDraft.id!==round.id;
+  if(fresh)captchaDraft={id:round.id,tiles:[...(round.myVote||[])]};
+  const revealed=round.status==='revealed', interactive=!manager&&isOpen&&connected;
+  const showCounts=manager||revealed;
+  const total=round.responses;
+  let html=`<div class="captcha-heading"><span class="eyebrow">HUMAN VERIFICATION / CLASSROOM SIMULATION</span><h2 id="captchaTitle" tabindex="-1">Select all squares with<br><strong>a cat</strong></h2><p>Include any part of the cat. Select again to undo.</p></div>`;
+  html+=`<div class="captcha-grid" role="group" aria-label="Nine image tiles, numbered left to right, top to bottom">`;
+  html+=round.options.map((label,i)=>{
+    const selected=captchaDraft.tiles.includes(i), count=round.counts?.[i]||0;
+    const percent=total?Math.round(count/total*100):0;
+    const caption=showCounts?`${total?percent+'%':'—'} selected`:String(i+1);
+    return `<button type="button" class="captcha-tile tile-${i} ${!manager&&selected?'selected':''}" data-tile="${i}" aria-label="${escapeHTML(label)}${showCounts?`: ${count} of ${total} participants selected`:''}" aria-pressed="${!manager&&selected}" ${!interactive?'disabled':''}><img src="/assets/captcha-cat.jpg" alt="" draggable="false"><span class="tile-caption">${caption}</span><span class="tile-check" aria-hidden="true">✓</span></button>`;
+  }).join('')+'</div>';
+  if(revealed){
+    html+=`<div class="captcha-label-count"><strong>${total*9}</strong><span>tile labels supplied by ${total} human${total===1?'':'s'}</span></div><div class="discussion"><span class="eyebrow">VERIFICATION, OR ANNOTATION?</span><p>${escapeHTML(round.reveal)}</p><p><strong>Image → your labels → a possible training dataset → a vision model.</strong></p><p>In this demo, the pipeline stops at labels. An unselected tile means “not selected,” which can also reflect a missed or uncertain tile.</p></div>`;
+  }else if(manager){
+    html+='<p class="hint">Live tile selection rates are visible only to you. Reveal to show the room how their clicks became image labels. There is no scored answer key.</p>';
+  }else{
+    html+=`<p id="captchaFeedback" class="hint" role="status">${round.myVote!==null?'Thank you for for allowing us to use you for free':'Choose tiles, then verify. If you see no cat, verify with no tiles selected.'}</p><button id="captchaVerify" type="button" class="primary" ${!interactive?'disabled':''}>${round.myVote!==null?'Update verification':'Verify'} <span>→</span></button>`;
+  }
+  html+=`<div class="round-footer"><span>${total} response${total===1?'':'s'} / ${state.participants} joined</span><span class="timer" id="countdown"></span></div>`;
+  if(manager&&!state.ended&&!revealed)html+=`<div class="round-actions"><button class="secondary small" id="closeRound" ${!isOpen||!connected?'disabled':''}>Close voting</button><button class="primary small" id="revealRound" ${!connected?'disabled':''}>Reveal the training labels</button></div>`;
+  $('roundContent').innerHTML=html;
+  document.querySelectorAll('[data-tile]').forEach(button=>button.onclick=()=>{
+    const tile=Number(button.dataset.tile), selected=!captchaDraft.tiles.includes(tile);
+    captchaDraft.tiles=selected?[...captchaDraft.tiles,tile]:captchaDraft.tiles.filter(value=>value!==tile);
+    button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));
+    $('captchaFeedback').textContent=`${captchaDraft.tiles.length} tiles selected. Press Verify to save these labels.`;
+  });
+  if($('captchaVerify'))$('captchaVerify').onclick=guard(async()=>{
+    const button=$('captchaVerify');button.disabled=true;
+    try{
+      await api(base()+'/vote',{roundId:round.id,tiles:[...captchaDraft.tiles]});
+      // Refresh also covers a successful submission before the next event arrives.
+      render(await api(base()+'/state'));
+    }finally{if(button.isConnected)button.disabled=!connected||!state||state.ended||state.round?.id!==round.id||state.round.status!=='open'||state.round.deadline<=serverNow();}
+  });
+  if($('closeRound'))$('closeRound').onclick=guard(()=>control('close'));
+  if($('revealRound'))$('revealRound').onclick=guard(()=>control('reveal'));
+  if(fresh&&!manager){$('captchaTitle').focus({preventScroll:true});$('roundContent').scrollIntoView({block:'start'});}
+  updateTimer();
+}
 function renderRound(){
   if(!state)return;
   const round=state.round, manager=state.role==='manager';
@@ -149,7 +240,9 @@ function renderRound(){
   const isOpen=round.status==='open'&&!state.ended&&round.deadline>serverNow();
   $('roundStatus').textContent=round.status==='revealed'?'REVEALED':isOpen?'VOTING OPEN':'VOTING CLOSED';
   $('roundStatus').className='badge '+(isOpen?'on':'');
+  if(round.type==='captcha'){renderCaptcha(round,manager,isOpen);return;}
   let html=`<span class="category">${escapeHTML(round.category)} · ${escapeHTML(round.origin)}</span><h2 class="waiting-title">${escapeHTML(round.title)}</h2><div class="round-observation">${escapeHTML(round.observation)}${round.evidence?`<br><small>Trigger context: ${escapeHTML(round.evidence.model)}, frame #${round.evidence.frameSeq}. This is not a frozen image.</small>`:''}</div><h3 class="round-question">${escapeHTML(round.question)}</h3>`;
+  if(!manager&&round.myResult)html+=`<p class="investor-result ${round.myResult==='W Investor'?'win':'loss'}" role="status">${escapeHTML(round.myResult)}</p>`;
   if(round.status==='revealed'){
     html+=resultsHTML(round.options,round.counts,round.responses);
     if(round.reveal)html+=`<div class="discussion"><span class="eyebrow">OPEN THE DISCUSSION</span><p>${escapeHTML(round.reveal)}</p></div>`;
@@ -174,12 +267,14 @@ function updateTimer(){
   $('countdown').textContent=round.status==='open'?`${seconds}s`:round.status==='revealed'?'Complete':'Closed';
   if(round.status==='open'&&seconds===0){
     document.querySelectorAll('[data-choice]').forEach(button=>button.disabled=true);
+    document.querySelectorAll('[data-tile]').forEach(button=>button.disabled=true);
+    if($('captchaVerify'))$('captchaVerify').disabled=true;
     if($('closeRound'))$('closeRound').disabled=true;
     $('roundStatus').textContent='VOTING CLOSED';
   }
 }
 function renderScenarios(){
-  const blocked=state.ended||state.panic||!!(state.round&&state.round.status!=='revealed');
+  const blocked=state.ended||state.panic||state.offer?.active||!!(state.round&&state.round.status!=='revealed');
   const signature=JSON.stringify([state.scenarios,blocked]);if(signature===scenarioSignature)return;scenarioSignature=signature;
   $('scenarioList').innerHTML=state.scenarios.map((s,i)=>`<div class="scenario-row"><span class="scenario-number">${String(i+1).padStart(2,'0')}</span><div class="scenario-info"><h3>${escapeHTML(s.title)}</h3><p>${escapeHTML(s.category)} · ${s.trigger==='manual'?'manual':s.trigger==='timer'?'timer or manual':`${escapeHTML(s.trigger)} detection or manual`}</p></div><button class="quiet small" data-scenario="${escapeHTML(s.id)}" ${blocked?'disabled':''}>Launch ↗</button></div>`).join('');
   document.querySelectorAll('[data-scenario]').forEach(button=>button.onclick=guard(()=>control('start',{scenarioId:button.dataset.scenario})));
@@ -296,6 +391,8 @@ async function captureLoop(generation){
   setTimeout(()=>captureLoop(generation),240);
 }
 function reset(){
+  silenceOffer();offerPlayed=null;document.body.classList.remove('offer-active');$('offerAlert').hidden=true;$('offerControls').hidden=true;
+  captchaDraft={id:null,tiles:[]};
   silenceAlarm();document.body.classList.remove('panic-active');document.title='Surveillance Lab';$('panicAlert').hidden=true;$('panicControls').hidden=true;
   stopCapture();if(streamAbort)streamAbort.abort();credential=null;state=null;sessionStorage.removeItem('surveillance-session');
   roundSignature=scenarioSignature=historySignature=logSignature=settingsSignature='';lastFrame=-1;
@@ -307,7 +404,15 @@ $('joinForm').onsubmit=guard(async event=>{event.preventDefault();void enableAla
 $('panicStart').onclick=guard(async()=>{alarmMuted=false;void enableAlarm();await control('panic',{active:true});});
 $('panicStop').onclick=guard(()=>control('panic',{active:false}));
 $('panicSound').onclick=()=>{if(alarmContext?.state==='running'&&alarmBuffer&&!alarmMuted){alarmMuted=true;renderPanic();}else{alarmMuted=false;void enableAlarm();}};
-document.addEventListener('visibilitychange',()=>{if(document.hidden)silenceAlarm();else renderPanic();});
+$('offerStart').onclick=guard(async()=>{void enableOfferSound();await control('offer',{active:true});});
+$('offerStop').onclick=guard(()=>control('offer',{active:false}));
+$('offerSound').onclick=guard(enableOfferSound);
+for(const [id,choice] of [['offerYes',0],['offerNo',1]])$(id).onclick=guard(async()=>{
+  const offerId=state.offer.id;
+  $('offerYes').disabled=$('offerNo').disabled=true;
+  try{await api(base()+'/vote',{offerId,choice});}finally{renderOffer();}
+});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){silenceAlarm();silenceOffer();}else{renderPanic();renderOffer();}});
 $('copyLink').onclick=guard(async()=>{
   const url=new URL(location.origin);url.searchParams.set('room',state.code);
   if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(url.href);toast('Join link copied. On other devices, use your server’s network address.');}
@@ -323,7 +428,7 @@ $('toggleCustom').onclick=()=>{$('customForm').hidden=!$('customForm').hidden;};
 $('customForm').onsubmit=guard(async event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.target));data.options=data.options.split('\n').map(x=>x.trim()).filter(Boolean);await control('custom',data);event.target.reset();event.target.hidden=true;toast('Scenario added to this room.');});
 $('endSession').onclick=guard(async()=>{if(!confirm('End this session for everyone? Active voting will be revealed and broadcasting will stop.'))return;await control('end');stopCapture();});
 $('export').onclick=guard(async()=>{const response=await fetch(base()+'/export',{headers:auth()});if(!response.ok)throw new Error('Export failed.');const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`surveillance-${state.code}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-window.addEventListener('pagehide',()=>{silenceAlarm();if(captureStream)captureStream.getTracks().forEach(t=>t.stop());});
+window.addEventListener('pagehide',()=>{silenceAlarm();silenceOffer();if(captureStream)captureStream.getTracks().forEach(t=>t.stop());});
 setInterval(updateTimer,200);
 (async()=>{
   try{health=await api('/api/health');}catch{toast('Cannot reach the server. Check that it is running.',true);}

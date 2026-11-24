@@ -1,11 +1,23 @@
 [
   {
+    "id": "captcha-lab",
+    "type": "captcha",
+    "title": "Prove you are human",
+    "category": "CAPTCHA / Hidden human labor",
+    "trigger": "manual",
+    "observation": "A familiar task: inspect an image and select the matching squares.",
+    "question": "Select all squares containing any part of the cat.",
+    "options": ["Tile 1 · top left", "Tile 2 · top middle", "Tile 3 · top right", "Tile 4 · middle left", "Tile 5 · center", "Tile 6 · middle right", "Tile 7 · bottom left", "Tile 8 · bottom middle", "Tile 9 · bottom right"],
+    "reveal": "You just annotated an image. Each submitted grid creates nine binary labels: cat selected / cat not selected. Human annotations can be used to train or evaluate computer vision models; agreement between annotators can help assess label quality. Border tiles show why instructions and human judgment matter. This classroom CAPTCHA is a simulation: no model is trained and no labels are sent to an external training service. These percentages show human selections, not model confidence or a verified answer key. Discuss: who supplies the labor, who benefits, and did the person clicking understand the purpose?"
+  },
+  {
     "id": "investment",
     "title": "Where do you invest?",
     "category": "Investment strategy",
     "trigger": "timer",
     "observation": "As Surveillance & Privacy Co. LTD E052, you are trying to make an investment on which sector of surveillance to focus on.\n\nYour customers already have cameras. They want better security, fewer missed incidents, and less time spent watching screens.\n\nYou have one development budget.",
     "question": "Where do you invest?",
+    "correctChoice": 0,
     "options": [
       "Better cameras\nInvest in the development of high-end video cameras that integrate Intel AI and Ryzen AI chips that offer computational power to support real-time AI analysis, and advanced features like live tracing without human intervention.",
       "Smarter software\nInvest in acquiring high-quality video datasets and developing AI models that turn existing camera feeds into real-time insights through object detection, activity tracking, and automated alerts, without requiring customers to replace their cameras.",
@@ -20,11 +32,26 @@
     "trigger": "timer",
     "observation": "Surveillance & Privacy Co. LTD E052 is mainly interested in government contracts. We need to pitch our software and hardware idea to countries based on their likelihood of integrating our software and how much money each government is willing to put into installing our systems.",
     "question": "Where should we sell?",
+    "correctChoice": 3,
     "options": [
       "Closed autocracies\nExamples: China, Saudi Arabia, and the United Arab Emirates.",
       "Electoral autocracies / competitive autocracies\nExamples: Russia, Turkey, and Egypt.",
       "Electoral democracies / illiberal democracies\nExamples: India, Brazil, and the Philippines.",
       "Advanced democracies\nExamples: the United States, Germany, and Canada."
+    ],
+    "reveal": ""
+  },
+  {
+    "id": "cities",
+    "title": "Should more cities implement AI surveillance?",
+    "category": "Final question",
+    "trigger": "timer",
+    "observation": "Make your decision and explain your reasoning to the group.",
+    "question": "Should more cities implement AI surveillance?",
+    "correctChoice": 0,
+    "options": [
+      "Yes, why?",
+      "No, why?"
     ],
     "reveal": ""
   }

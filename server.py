@@ -43,6 +43,7 @@ class Room:
         self.created = now()
         self.ended = False
         self.panic = False
+        self.offer = None
         self.players = {}
         self.listeners = set()
         self.round = None
@@ -78,16 +79,21 @@ class Room:
     def counts(self):
         counts = [0] * len(self.round['options'])
         for vote in self.round['votes'].values():
-            counts[vote] += 1
+            for choice in vote if self.round.get('type') == 'captcha' else [vote]:
+                counts[choice] += 1
         return counts
 
     def view(self, who):
         manager = who == 'manager'
         active = None
         if self.round:
-            active = {k: v for k, v in self.round.items() if k not in ('votes', 'reveal')}
+            active = {k: v for k, v in self.round.items() if k not in ('votes', 'reveal', 'correctChoice')}
             active['responses'] = len(self.round['votes'])
             active['myVote'] = self.round['votes'].get(who)
+            if (not manager and who in self.round['votes'] and 'correctChoice' in self.round and
+                    (self.round['status'] != 'open' or now() >= self.round['deadline'])):
+                active['myResult'] = ('W Investor' if active['myVote'] == self.round['correctChoice']
+                                      else 'L Investory')
             if manager or self.round['status'] == 'revealed':
                 active['counts'] = self.counts()
             if self.round['status'] == 'revealed':
@@ -101,7 +107,15 @@ class Room:
                 'source': self.source, 'live': live, 'frameAt': self.frame_at,
                 'frameSeq': self.frame_seq,
                 'observation': self.observation if live else None,
-                'history': self.history, 'panic': self.panic}
+                'history': self.history, 'panic': self.panic, 'offer': None}
+        if self.offer:
+            choice = self.offer['votes'].get(who)
+            data['offer'] = {'id': self.offer['id'], 'active': self.offer['active'],
+                             'myVote': choice, 'responses': len(self.offer['votes'])}
+            if not manager and choice is not None:
+                data['offer']['myResult'] = 'W Investor' if choice == 0 else 'L Investor'
+            if manager:
+                data['offer']['counts'] = [sum(v == i for v in self.offer['votes'].values()) for i in range(2)]
         if manager:
             data.update(scenarios=self.scenarios, events=self.events,
                         roster=[{'name': p['name'], 'online': p['connections'] > 0} for p in self.players.values()])
@@ -119,11 +133,18 @@ class Room:
     def start_round(self, scenario, origin='manual'):
         check(not self.ended, 'The session has ended.', 409)
         check(not self.panic, 'Stop the panic simulation before starting a round.', 409)
+        check(not self.offer or not self.offer['active'], 'Close the investor offer before starting a round.', 409)
         check(not self.round or self.round['status'] == 'revealed', 'Reveal the current round before starting another.', 409)
         self.round = {k: copy.deepcopy(scenario[k]) for k in ('title', 'category', 'observation', 'question', 'options', 'reveal')}
+        if 'correctChoice' in scenario:
+            self.round['correctChoice'] = scenario['correctChoice']
+        if scenario.get('type') == 'captcha':
+            self.round.update(type='captcha', image='/assets/captcha-cat.jpg')
         self.round.update(id=secrets.token_hex(8), scenarioId=scenario['id'], status='open',
                           openedAt=now(), deadline=now()+self.settings['duration'], votes={}, origin=origin,
                           evidence=copy.deepcopy(self.observation) if self.source != 'off' and now()-self.frame_at < 3 else None)
+        if self.round.get('type') == 'captcha':
+            self.round['deadline'] = now() + max(60, self.settings['duration'])
         self.log(f"Round opened: {scenario['title']} ({origin})")
         self.publish()
 
@@ -145,6 +166,8 @@ class Room:
                              'counts': self.counts(), 'responses': len(self.round['votes']),
                              'reveal': self.round['reveal'], 'origin': self.round['origin'],
                              'at': now()})
+        if self.round.get('type') == 'captcha':
+            self.history[-1]['type'] = 'captcha'
         self.next_prompt = now()+self.settings['interval']
         self.log('Results revealed')
         self.publish()
@@ -158,7 +181,7 @@ class Room:
                             'count': count, 'entity': entity, 'zone': zone, 'boxes': boxes}
         self.observation['people' if simulated else 'faces'] = count
         self.detection_streak = self.detection_streak + 1 if count else 0
-        if (not self.panic and self.settings['visionTriggers'] and now()-self.frame_at < 3 and self.detection_streak >= 2 and
+        if (not self.panic and not (self.offer and self.offer['active']) and self.settings['visionTriggers'] and now()-self.frame_at < 3 and self.detection_streak >= 2 and
                 now() - self.last_trigger >= self.settings['interval'] and
                 (not self.round or self.round['status'] == 'revealed') and not self.ended):
             trigger = 'crowd' if count >= 3 else 'zone' if zone else entity
@@ -283,9 +306,23 @@ async def vote(request):
     room, who = resolve(request)
     check(who != 'manager', 'Join as a participant in another browser to vote.', 403)
     data = await body(request)
+    if 'offerId' in data:
+        check(not room.ended and not room.panic and room.offer and room.offer['active'], 'The investor offer is closed.', 409)
+        check(data['offerId'] == room.offer['id'], 'This offer has been replaced.', 409)
+        choice = integer(data, 'choice', 0, 1)
+        room.offer['votes'][who] = choice
+        room.publish()
+        return web.json_response({'ok': True})
     check(not room.ended and room.round and room.round['status'] == 'open' and now() < room.round['deadline'], 'Voting is closed.', 409)
     check(data.get('roundId') == room.round['id'], 'This prompt has been replaced.', 409)
-    choice = integer(data, 'choice', 0, len(room.round['options'])-1)
+    if room.round.get('type') == 'captcha':
+        choice = data.get('tiles')
+        check(isinstance(choice, list) and len(choice) <= 9 and
+              all(type(tile) is int and 0 <= tile < 9 for tile in choice) and
+              len(set(choice)) == len(choice), 'Select unique tiles numbered 0 to 8.')
+        choice = sorted(choice)
+    else:
+        choice = integer(data, 'choice', 0, len(room.round['options'])-1)
     room.round['votes'][who] = choice
     room.publish()
     return web.json_response({'ok': True})
@@ -301,6 +338,16 @@ async def control(request):
         room.panic = data['active']
         room.next_prompt = now()+room.settings['interval']
         room.log('AI failure simulation '+('started' if room.panic else 'stopped'))
+    elif action == 'offer':
+        check(type(data.get('active')) is bool, 'Invalid offer state.')
+        if data['active']:
+            check(not room.panic, 'Stop the panic simulation before presenting the offer.', 409)
+            check(not room.offer or not room.offer['active'], 'The investor offer is already active.', 409)
+            room.offer = {'id': secrets.token_hex(8), 'active': True, 'votes': {}}
+        elif room.offer:
+            room.offer['active'] = False
+        room.next_prompt = now()+room.settings['interval']
+        room.log('Investor offer '+('presented' if data['active'] else 'closed'))
     elif action == 'start':
         scenario = next((s for s in room.scenarios if s['id'] == data.get('scenarioId')), None)
         check(scenario is not None, 'Scenario not found.', 404)
@@ -344,6 +391,8 @@ async def control(request):
             room.reveal()
         room.ended, room.source, room.frame, room.observation = True, 'off', None, None
         room.panic = False
+        if room.offer:
+            room.offer['active'] = False
         room.log('Session ended')
     else:
         raise ApiError('Unknown manager action.')
@@ -418,7 +467,7 @@ async def maintenance(app):
             if room.round and room.round['status'] == 'open' and now() >= room.round['deadline']:
                 room.close_round()
             # Automatic mode reveals after a short pause, then schedules another round.
-            if room.settings['automatic'] and not room.panic:
+            if room.settings['automatic'] and not room.panic and not (room.offer and room.offer['active']):
                 if room.round and room.round['status'] == 'closed' and now() >= room.round.get('closedAt', room.round['deadline'])+4:
                     room.reveal()
                 if (not room.round or room.round['status'] == 'revealed') and now() >= room.next_prompt:

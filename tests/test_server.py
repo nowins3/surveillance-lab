@@ -40,6 +40,64 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.action('reveal')
         self.assertEqual((await self.view())['round']['counts'],[0,1,0])
         self.assertIn('reveal',(await self.view())['round'])
+    async def test_investor_feedback_after_close_reveal_and_timeout(self):
+        response=await self.client.post(self.root+'/join',json={'name':'Another investor'})
+        other={'Authorization':'Bearer '+(await response.json())['token']}
+        for scenario, correct in [('investment',0),('markets',3),('cities',0)]:
+            await self.action('start',scenarioId=scenario)
+            game=(await self.view())['round']
+            self.assertNotIn('correctChoice',game)
+            self.assertNotIn('myResult',game)
+            await self.client.post(self.root+'/vote',headers=self.player,
+                json={'roundId':game['id'],'choice':correct})
+            self.assertNotIn('myResult',(await self.view())['round'])
+            self.assertNotIn('myResult',(await self.view(other))['round'])
+            await self.client.post(self.root+'/vote',headers=other,
+                json={'roundId':game['id'],'choice':(correct+1)%len(game['options'])})
+            # Expiring the server deadline also makes feedback available before maintenance runs.
+            self.room.round['deadline']=time.time()-1
+            self.assertEqual((await self.view())['round']['myResult'],'W Investor')
+            self.assertEqual((await self.view(other))['round']['myResult'],'L Investory')
+            await self.action('close')
+            self.assertEqual((await self.view())['round']['myResult'],'W Investor')
+            self.assertEqual((await self.view(other))['round']['myResult'],'L Investory')
+            self.assertNotIn('counts',(await self.view())['round'])
+            self.assertNotIn('myResult',(await self.view(self.manager))['round'])
+            await self.action('reveal')
+            self.assertEqual((await self.view())['round']['myResult'],'W Investor')
+            self.assertEqual((await self.view(other))['round']['myResult'],'L Investory')
+            self.assertNotIn('correctChoice',(await self.view())['round'])
+
+    async def test_investor_offer_permissions_feedback_and_replay(self):
+        response=await self.client.post(self.root+'/control',headers=self.player,json={'action':'offer','active':True})
+        self.assertEqual(response.status,403)
+        self.assertEqual((await self.action('offer',active='yes')).status,400)
+        await self.action('offer',active=True)
+        offer=(await self.view())['offer']
+        self.assertTrue(offer['active'])
+        self.assertNotIn('counts',offer)
+        self.assertEqual((await self.action('start',scenarioId='investment')).status,409)
+        self.assertEqual((await self.action('offer',active=True)).status,409)
+        for choice,result in [(0,'W Investor'),(1,'L Investor')]:
+            response=await self.client.post(self.root+'/vote',headers=self.player,json={'offerId':offer['id'],'choice':choice})
+            self.assertEqual(response.status,200)
+            self.assertEqual((await self.view())['offer']['myResult'],result)
+        self.assertEqual((await self.view(self.manager))['offer']['counts'],[0,1])
+        await self.action('panic',active=True)
+        response=await self.client.post(self.root+'/vote',headers=self.player,json={'offerId':offer['id'],'choice':0})
+        self.assertEqual(response.status,409)
+        await self.action('panic',active=False)
+        await self.action('offer',active=False)
+        response=await self.client.post(self.root+'/vote',headers=self.player,json={'offerId':offer['id'],'choice':0})
+        self.assertEqual(response.status,409)
+        await self.action('offer',active=True)
+        self.assertNotEqual((await self.view())['offer']['id'],offer['id'])
+        self.assertEqual((await self.view())['offer']['responses'],0)
+        response=await self.client.post(self.root+'/vote',headers=self.player,json={'offerId':offer['id'],'choice':0})
+        self.assertEqual(response.status,409)
+        await self.action('end')
+        self.assertFalse((await self.view())['offer']['active'])
+
     async def test_deadlines_stale_votes_and_one_vote_per_player(self):
         await self.action('start',scenarioId='investment');rid=self.room.round['id']
         for choice in (0,2):
@@ -54,6 +112,49 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status,409)
         response=await self.client.post(self.root+'/vote',headers=self.player,json={'roundId':self.room.round['id'],'choice':True})
         self.assertEqual(response.status,400)
+    async def test_captcha_labels_permissions_reveal_and_export(self):
+        self.assertEqual((await self.client.post(self.root+'/control', headers=self.player,
+            json={'action':'start','scenarioId':'captcha-lab'})).status,403)
+        self.assertEqual((await self.action('start',scenarioId='captcha-lab')).status,200)
+        game=(await self.view())['round']
+        self.assertEqual(game['type'],'captcha')
+        self.assertGreaterEqual(game['deadline']-game['openedAt'],59)
+        self.assertNotIn('counts',game)
+        self.assertNotIn('reveal',game)
+        async def submit(tiles, headers=None, rid=None):
+            return await self.client.post(self.root+'/vote',headers=headers or self.player,
+                json={'roundId':rid or game['id'],'tiles':tiles})
+        self.assertEqual((await submit([0],self.manager)).status,403)
+        self.assertEqual((await submit([0],rid='stale')).status,409)
+        for invalid in (None, '1', [True], [-1], [9], [1,1], [1.5], [{}]):
+            self.assertEqual((await submit(invalid)).status,400)
+        self.assertEqual((await submit([7,4,3])).status,200)
+        self.assertEqual((await self.view())['round']['myVote'],[3,4,7])
+        self.assertEqual((await self.view(self.manager))['round']['counts'],[0,0,0,1,1,0,0,1,0])
+        # A revision replaces the participant's earlier labels, including all-negative labels.
+        self.assertEqual((await submit([])).status,200)
+        self.assertEqual((await self.view())['round']['myVote'],[])
+        self.assertEqual(self.room.counts(),[0]*9)
+        await submit([4,7])
+        self.assertEqual((await self.action('start',scenarioId='investment')).status,409)
+        self.room.round['deadline']=time.time()-1
+        self.assertEqual((await submit([1])).status,409)
+        await self.action('close')
+        self.assertNotIn('counts',(await self.view())['round'])
+        await self.action('reveal')
+        result=(await self.view())['round']
+        self.assertEqual(result['responses'],1)
+        self.assertEqual(result['counts'],[0,0,0,0,1,0,0,1,0])
+        self.assertIn('simulation',result['reveal'])
+        response=await self.client.get(self.root+'/export',headers=self.manager)
+        record=(await response.json())['results'][0]
+        self.assertEqual(record['type'],'captcha')
+        self.assertEqual(record['counts'],result['counts'])
+        self.assertNotIn('votes',record)
+        response=await self.client.get('/assets/captcha-cat.jpg')
+        self.assertEqual(response.status,200)
+        await self.action('start',scenarioId='captcha-lab')
+        self.assertIsNone((await self.view())['round']['myVote'])
     async def test_panic_authorization_sync_and_stop(self):
         response=await self.client.post(self.root+'/control',headers=self.player,json={'action':'panic','active':True})
         self.assertEqual(response.status,403)

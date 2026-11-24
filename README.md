@@ -10,9 +10,16 @@ A complete, locally runnable multiplayer web application for a facilitated mass-
 - An animated demo scene with explicitly labeled synthetic people and synthetic detections.
 - Optional real, offline **OpenCV YuNet face detection**, with face bounding boxes, counts, and detection scores.
 - Manual scenarios, periodic prompts, detection-triggered prompts, custom scenarios, timed voting, manager-only live counts, public reveals, and results history.
+- A launchable 3×3 photo CAPTCHA demonstrating human image annotation, with per-tile selection rates and a discussion reveal.
 - JSON exports containing aggregate results, scenario definitions, and the activity log. Credentials and image frames are excluded.
 - Server-authoritative voting deadlines and permissions; participants cannot control the camera, trigger rounds, or read unrevealed results through the API.
 - Automated server tests and a separate browser smoke test.
+
+## CAPTCHA minigame
+
+In the manager's **Introduce a decision** library, launch **Prove you are human**. Everyone receives the same nine-tile cat photograph. Participants select every square containing any part of the cat, then press **Verify**. They can update their submission until the round closes (at least 60 seconds). Empty selections are valid; each submission represents nine binary tile labels.
+
+The manager sees live selection rates and can click **Reveal the training labels** to show the group how their selections form annotations. Percentages represent human selections, not model confidence or a scored answer key. Counts are per tile, so percentages across tiles need not sum to 100%. The reveal and aggregate labels are included in the existing history and JSON export. This is an educational simulation; no model is trained or external labeling service contacted.
 
 ## Requirements
 

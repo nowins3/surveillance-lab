@@ -65,6 +65,21 @@ async def main():
             await participant.locator('#panicAlert').wait_for()
             await manager.locator('#panicStop').click()
             await participant.locator('#panicAlert').wait_for(state='hidden')
+            # Calmer investor alert shares state, supports both outcomes, and survives reload.
+            await manager.locator('#offerStart').click()
+            await participant.locator('#offerAlert').wait_for()
+            await participant.locator('#offerYes').click()
+            await participant.wait_for_function("document.querySelector('#offerResult').textContent==='W Investor'")
+            await participant.locator('#offerNo').click()
+            await participant.wait_for_function("document.querySelector('#offerResult').textContent==='L Investor'")
+            await participant.locator('#offerSound').click()
+            await participant.reload()
+            await participant.locator('#offerResult').wait_for()
+            assert await participant.locator('#offerResult').inner_text()=='L Investor'
+            await manager.screenshot(path=str(screenshot_dir/'offer-manager.png'),full_page=True)
+            await participant.screenshot(path=str(screenshot_dir/'offer-participant.png'),full_page=True)
+            await manager.locator('#offerStop').click()
+            await participant.locator('#offerAlert').wait_for(state='hidden')
             # Reload restores the participant credential without creating a duplicate participant.
             await participant.reload()
             await participant.locator('#sessionTitle').wait_for()
